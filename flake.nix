@@ -159,15 +159,13 @@
               environment = {
                 PORT = toString cfg.port;
                 RELEASE_NAME = "hello";
+                RELEASE_COOKIE = "$(tr -dc A-Za-z0-9 < /dev/urandom | head -c 20)";
               };
               serviceConfig = {
                 Type = "simple";
                 User = cfg.user;
                 Group = cfg.group;
-                ExecStart = ''
-                  export RELEASE_COOKIE=$(tr -dc A-Za-z0-9 < /dev/urandom | head -c 20)
-                  ${self.packages.${pkgs.system}.hello}/bin/hello start
-                '';
+                ExecStart = "${self.packages.${pkgs.system}.hello}/bin/hello start";
                 Restart = "on-failure";
               };
             };
@@ -185,6 +183,50 @@
             };
           };
         };
+      flake.nixosModules.vmTest =
+        { pkgs, ... }:
+        {
+          imports = [
+            self.nixosModules.default
+          ];
+
+          # Enable both services
+          services.hello.enable = true;
+          services.hello.port = 4000;
+
+          # VM test-specific configuration
+          virtualisation = {
+            cores = 2;
+            memorySize = 2048;
+            graphics = false;
+          };
+
+          # Ensure we have testing tools available
+          environment.systemPackages = with pkgs; [
+            curl
+            postgresql
+            jq
+          ];
+
+          networking = {
+            firewall.allowedTCPPorts = [
+              4000
+              5432
+            ];
+          };
+        };
+      # Add a convenient way to run the test VM interactively
+      flake.packages.aarch64-linux.test-vm =
+        let
+          pkgs = inputs.nixpkgs.legacyPackages.aarch64-linux;
+          system = pkgs.nixos {
+            imports = [
+              self.nixosModules.vmTest
+            ];
+          };
+        in
+        system.config.system.build.vm;
+
       flake.nixosConfigurations.vm = inputs.nixpkgs.lib.nixosSystem {
         system = "aarch64-linux"; # or your target system architecture
         modules = [
@@ -223,5 +265,55 @@
           )
         ];
       };
+
+      flake.checks.aarch64-linux.vm-test =
+        let
+          pkgs = inputs.nixpkgs.legacyPackages.aarch64-linux;
+        in
+        pkgs.testers.nixosTest {
+          name = "hello-phoenix-test";
+
+          nodes.machine =
+            { ... }:
+            {
+              imports = [ self.nixosModules.vmTest ];
+            };
+
+          testScript = # python
+            ''
+              import json
+              import time
+
+              start_all()
+
+              # Wait for the system to be ready
+              machine.wait_for_unit("multi-user.target")
+
+              # Check PostgreSQL
+              machine.wait_for_unit("postgresql")
+              machine.succeed("sudo -u postgres psql -c '\\l' | grep hello_dev")
+
+              # Wait for Phoenix service
+              machine.wait_for_unit("hello")
+
+              # Give the Phoenix application time to fully start
+              time.sleep(10)
+
+              # Test Phoenix endpoint
+              machine.succeed("curl --fail -v http://localhost:4000/")
+
+              # Additional health checks
+              with machine.nested("Checking service statuses"):
+                  machine.succeed("systemctl is-active postgresql")
+                  machine.succeed("systemctl is-active hello")
+
+              # Check PostgreSQL connection from Phoenix
+              machine.succeed("sudo -u hello psql -d hello_dev -h localhost -c '\\dt'")
+
+              # Check logs for any errors
+              machine.fail("journalctl -u hello | grep -i error")
+              machine.fail("journalctl -u postgresql | grep -i error")
+            '';
+        };
     };
 }
