@@ -3,6 +3,9 @@
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixpkgs-unstable";
     flake-parts.url = "github:hercules-ci/flake-parts";
+    flake-parts.inputs.nixpkgs-lib.follows = "nixpkgs";
+    treefmt-nix.url = "github:numtide/treefmt-nix";
+    treefmt-nix.inputs.nixpkgs.follows = "nixpkgs";
     systems.url = "github:nix-systems/default";
     process-compose-flake.url = "github:Platonic-Systems/process-compose-flake";
     services-flake.url = "github:juspay/services-flake";
@@ -13,10 +16,10 @@
       systems = import inputs.systems;
       imports = [
         inputs.process-compose-flake.flakeModule
+        inputs.treefmt-nix.flakeModule
       ];
       perSystem =
         {
-          self',
           pkgs,
           config,
           lib,
@@ -27,7 +30,7 @@
           # Therefore, this will add a default package that you can build using
           # `nix build` and run using `nix run`.
           process-compose."default" =
-            { config, ... }:
+            { ... }:
             {
               imports = [
                 inputs.services-flake.processComposeModules.default
@@ -80,6 +83,19 @@
               pkgs.git
               pkgs.elixir
             ] ++ lib.optionals pkgs.stdenv.isLinux [ pkgs.inotify-tools ];
+          };
+
+          treefmt = {
+            projectRootFile = ".git/config";
+
+            programs = {
+              deadnix.enable = true;
+              nixfmt.enable = true;
+              nixfmt.package = pkgs.nixfmt-rfc-style;
+              shellcheck.enable = true;
+              shfmt.enable = true;
+              mix-format.enable = true;
+            };
           };
         };
     };
