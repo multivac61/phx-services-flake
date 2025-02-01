@@ -164,7 +164,10 @@
                 Type = "simple";
                 User = cfg.user;
                 Group = cfg.group;
-                ExecStart = "${self.packages.${pkgs.system}.hello}/bin/hello start";
+                ExecStart = ''
+                  export RELEASE_COOKIE=$(tr -dc A-Za-z0-9 < /dev/urandom | head -c 20)
+                  ${self.packages.${pkgs.system}.hello}/bin/hello start
+                '';
                 Restart = "on-failure";
               };
             };
