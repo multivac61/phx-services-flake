@@ -11,7 +11,7 @@
     services-flake.url = "github:juspay/services-flake";
   };
   outputs =
-    inputs:
+    { self, ... }@inputs:
     inputs.flake-parts.lib.mkFlake { inherit inputs; } {
       systems = import inputs.systems;
       imports = [
@@ -74,6 +74,25 @@
                 depends_on."phoenix-init".condition = "process_completed_successfully";
               };
             };
+          packages.hello =
+            let
+              mixExs = builtins.readFile ./hello/mix.exs;
+              pname = builtins.head (builtins.match ".*app:[[:space:]]*:([a-zA-Z0-9_]+).*" mixExs);
+              version = builtins.head (
+                builtins.match ".*version:[[:space:]]*\"([0-9]+\\.[0-9]+\\.[0-9]+)\".*" mixExs
+              );
+              src = ./hello;
+            in
+            pkgs.beamPackages.mixRelease {
+              inherit pname version src;
+              MIX_ENV = "prod";
+              mixFodDeps = pkgs.beamPackages.fetchMixDeps {
+                inherit version src pname;
+                sha256 = "sha256-bEaxsw3OdRoiGoi1Vv2k0QxNT/PdGDGsOf5UDho3L1o=";
+                buildInputs = [ ];
+                propagatedBuildInputs = [ ];
+              };
+            };
 
           devShells.default = pkgs.mkShell {
             inputsFrom = [
@@ -84,7 +103,6 @@
               pkgs.elixir
             ] ++ lib.optionals pkgs.stdenv.isLinux [ pkgs.inotify-tools ];
           };
-
           treefmt = {
             projectRootFile = ".git/config";
 
@@ -98,5 +116,109 @@
             };
           };
         };
+      # NixOS module for the Phoenix application
+      flake.nixosModules.default =
+        {
+          lib,
+          config,
+          pkgs,
+          ...
+        }:
+        with lib;
+        let
+          cfg = config.services.hello;
+        in
+        {
+          options.services.hello = {
+            enable = mkEnableOption "Phoenix application service";
+            port = mkOption {
+              type = types.port;
+              default = 4000;
+              description = "Port to run the Phoenix application on";
+            };
+            user = mkOption {
+              type = types.str;
+              default = "hello";
+              description = "User to run the Phoenix application as";
+            };
+            group = mkOption {
+              type = types.str;
+              default = "hello";
+              description = "Group to run the Phoenix application as";
+            };
+          };
+
+          config = mkIf cfg.enable {
+            systemd.services.hello = {
+              description = "Phoenix Application Service";
+              wantedBy = [ "multi-user.target" ];
+              after = [
+                "network.target"
+                "postgresql.service"
+              ];
+              environment = {
+                PORT = toString cfg.port;
+                RELEASE_NAME = "hello";
+              };
+              serviceConfig = {
+                Type = "simple";
+                User = cfg.user;
+                Group = cfg.group;
+                ExecStart = "${self.packages.${pkgs.system}.hello}/bin/hello start";
+                Restart = "on-failure";
+              };
+            };
+
+            users.users.${cfg.user} = {
+              isSystemUser = true;
+              group = cfg.group;
+            };
+            users.groups.${cfg.group} = { };
+
+            # PostgreSQL configuration
+            services.postgresql = {
+              enable = true;
+              ensureDatabases = [ "hello_dev" ];
+            };
+          };
+        };
+      flake.nixosConfigurations.vm = inputs.nixpkgs.lib.nixosSystem {
+        system = "aarch64-linux"; # or your target system architecture
+        modules = [
+          "${inputs.nixpkgs}/nixos/modules/virtualisation/qemu-vm.nix"
+          self.nixosModules.default
+          (
+            { ... }:
+            {
+              system.stateVersion = "25.05";
+              # VM-specific settings
+              virtualisation = {
+                cores = 2;
+                memorySize = 2048; # MB
+                graphics = false; # Headless mode
+              };
+
+              # Enable the Phoenix service
+              services.hello.enable = true;
+              services.hello.port = 4000;
+
+              # Network configuration
+              networking = {
+                useDHCP = true;
+                firewall.allowedTCPPorts = [ 4000 ]; # Allow access to Phoenix port
+              };
+
+              # Enable SSH for easy access
+              services.openssh = {
+                enable = true;
+                settings.PermitRootLogin = "yes";
+                settings.PasswordAuthentication = true;
+              };
+
+              users.users.root.initialPassword = "nixos";
+            }
+          )
+        ];
+      };
     };
 }
